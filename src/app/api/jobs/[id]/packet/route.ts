@@ -9,6 +9,7 @@ import { getActiveCandidateProfile } from '@/lib/candidate-profile';
 import prisma from '@/lib/db';
 import { serializeJob } from '@/lib/job-contract';
 import {
+  alignPacketWithCurrentScore,
   buildDeterministicPacket,
   normalizePacketPayload,
   type PacketPayload,
@@ -26,6 +27,9 @@ async function generateClaudePacket(job: {
     roleFamily?: string | null;
     priorityScore?: number | null;
     positionabilityScore?: number | null;
+    riskLevel?: string | null;
+    riskFlags?: string[];
+    pursuitRecommendation?: string | null;
     titleFit: number;
     skillsFit: number;
     seniorityFit: number;
@@ -61,12 +65,15 @@ Sponsorship Risk: ${job.score?.sponsorshipRisk ?? 0}/100
 Fit Score: ${job.score?.overallScore ?? 0}/100
 Priority Score: ${job.score?.priorityScore ?? 0}/100
 Positionability: ${job.score?.positionabilityScore ?? 0}/100
+Risk Level: ${job.score?.riskLevel || 'UNKNOWN'}
+Recommendation: ${job.score?.pursuitRecommendation || 'UNKNOWN'}
 Role Family: ${job.score?.roleFamily || ''}
 
 Matched Core Skills: ${(job.score?.matchedCoreSkills || job.score?.matchedSkills || []).join(', ')}
 Missing Core Skills: ${(job.score?.missingCoreSkills || []).join(', ')}
 Missing Secondary Skills: ${(job.score?.missingSecondarySkills || []).join(', ')}
 Incidental Gaps: ${(job.score?.keywordGaps || []).join(', ')}
+Risk Flags: ${(job.score?.riskFlags || []).join(', ')}
 Risks: ${(job.score?.risks || []).join(', ')}
 Rationale: ${job.score?.strategicRationale || job.score?.rationale || ''}
 Positionability Note: ${job.score?.positionabilityNote || ''}
@@ -95,6 +102,10 @@ ${job.content?.rawText || ''}
 ${scoreText}
 
 Important instruction:
+- Treat the current score block as the source of truth for packet guidance.
+- Do not output stale higher scores or “strong fit” language when recommendation/risk say otherwise.
+- If recommendation is LOW_PRIORITY or NOT_WORTH_PURSUING, the packet must explicitly reflect skip-style guidance.
+- If risks mention seniority, leadership, or years-of-experience mismatch, surface that directly.
 - If the JD says employer sponsorship is not available, treat that as a risk for this candidate profile.
 - Do not describe "no sponsorship" wording as favorable.
 - Surface sponsorship constraints in both "risks" and "sponsorNotes".
@@ -165,6 +176,12 @@ export async function POST(
       console.warn('[Generate Packet Fallback]', error);
       packetData = buildDeterministicPacket(job as PacketJobInput, candidateProfile);
     }
+
+    packetData = alignPacketWithCurrentScore(
+      packetData,
+      job as PacketJobInput,
+      candidateProfile,
+    );
 
     await prisma.reviewPacket.upsert({
       where: { jobId: job.id },

@@ -71,6 +71,20 @@ type SkillEvaluation = {
   secondaryFitScore: number;
 };
 
+type RealismAnalysis = {
+  titleRealism: number;
+  seniorityRealism: number;
+  leadershipRealism: number;
+  overallRealism: number;
+  fitCap: number;
+  priorityCap: number;
+  recommendationCeiling: string;
+  requiredYears: number | null;
+  yearsGap: number;
+  blockingReasons: string[];
+  cautionReasons: string[];
+};
+
 const SCORE_WEIGHTS = {
   fitScore: {
     familyAlignment: 0.3,
@@ -136,6 +150,82 @@ const LEADERSHIP_SIGNALS = [
   'vice president',
   'engineering manager',
   'architect',
+];
+
+const EXECUTIVE_TITLE_SIGNALS = [
+  'vice president',
+  'vp ',
+  'vp,',
+  'vp of',
+  'director',
+  'head of',
+];
+
+const VERY_SENIOR_TITLE_SIGNALS = [
+  'principal engineer',
+  'principal software engineer',
+  'principal backend engineer',
+  'principal ai engineer',
+  'staff engineer',
+  'senior staff',
+  'distinguished',
+  'fellow',
+];
+
+const MANAGEMENT_TITLE_SIGNALS = [
+  'engineering manager',
+  'manager',
+  'people manager',
+];
+
+const LEAD_TITLE_SIGNALS = [
+  'tech lead',
+  'technical lead',
+  'lead engineer',
+  'lead software engineer',
+  'lead developer',
+];
+
+const ARCHITECT_TITLE_SIGNALS = [
+  'architect',
+  'solution architect',
+  'enterprise architect',
+  'software architect',
+];
+
+const LEADERSHIP_SCOPE_SIGNALS = [
+  'mentor',
+  'mentoring',
+  'coach',
+  'coaching',
+  'team guidance',
+  'guide and influence others',
+  'guide others',
+  'influence others',
+  'org influence',
+  'cross functional leadership',
+  'technical leadership',
+  'define strategy',
+  'directional strategy',
+  'strategy ownership',
+  'architecture governance',
+  'architectural governance',
+  'escalation management',
+  'risk management',
+  'recognized authority',
+  'organizational influence',
+  'stakeholder management',
+  'leadership',
+  'roadmap ownership',
+  'governance',
+  'people management',
+  'build and lead',
+];
+
+const PROGRESSIVE_EXPERIENCE_SIGNALS = [
+  'progressive software engineering experience',
+  'progressive engineering experience',
+  'progressively responsible',
 ];
 
 const SKILL_ALIASES: Record<string, string[]> = {
@@ -422,6 +512,31 @@ function getSkillAliases(skill: string) {
   return SKILL_ALIASES[skill] || [skill];
 }
 
+function recommendationRank(recommendation: string) {
+  switch (recommendation) {
+    case 'STRONG_CURRENT_FIT':
+      return 4;
+    case 'ADJACENT_HIGH_PRIORITY':
+      return 3;
+    case 'STRETCH_BUT_CREDIBLE':
+      return 2;
+    case 'LOW_PRIORITY':
+      return 1;
+    case 'NOT_WORTH_PURSUING':
+    default:
+      return 0;
+  }
+}
+
+function applyRecommendationCeiling(
+  recommendation: string,
+  ceiling: string,
+) {
+  return recommendationRank(recommendation) > recommendationRank(ceiling)
+    ? ceiling
+    : recommendation;
+}
+
 function hasSkill(text: string, skill: string) {
   return getSkillAliases(skill).some((alias) => phraseInText(text, alias));
 }
@@ -600,6 +715,195 @@ function calculateTitleFit(
       targetTitleHits * 12 +
       (currentRoleMatch ? 10 : 0),
   );
+}
+
+function extractRequiredYears(text: string) {
+  const lowerText = text.toLowerCase();
+  const matches: number[] = [];
+  const patterns = [
+    /(?:minimum of |at least |minimum )?(\d{1,2})\s*(?:\+|plus)?\s*(?:-|to)?\s*(\d{1,2})?\s+years?[^.\n]{0,40}experience/g,
+    /(\d{1,2})\+\s+years?[^.\n]{0,40}experience/g,
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(lowerText)) !== null) {
+      const first = Number(match[1] || 0);
+      const second = Number(match[2] || 0);
+      matches.push(Math.max(first, second));
+    }
+  }
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  return Math.max(...matches);
+}
+
+function analyzeRoleRealism(
+  title: string,
+  text: string,
+  profile: ScoringProfile,
+): RealismAnalysis {
+  const normalizedTitle = normalizeForMatch(title);
+  const normalizedText = normalizeForMatch(`${title} ${text}`);
+  const experienceYears = profile.experienceYears || 0;
+  const requiredYears = extractRequiredYears(`${title}\n${text}`);
+  const yearsGap =
+    requiredYears !== null ? Math.max(0, requiredYears - experienceYears) : 0;
+
+  const executiveTitleHits = EXECUTIVE_TITLE_SIGNALS.filter((signal) =>
+    phraseInText(normalizedTitle, signal),
+  ).length;
+  const verySeniorTitleHits = VERY_SENIOR_TITLE_SIGNALS.filter((signal) =>
+    phraseInText(normalizedTitle, signal),
+  ).length;
+  const managementTitleHits = MANAGEMENT_TITLE_SIGNALS.filter((signal) =>
+    phraseInText(normalizedTitle, signal),
+  ).length;
+  const leadTitleHits = LEAD_TITLE_SIGNALS.filter((signal) =>
+    phraseInText(normalizedTitle, signal),
+  ).length;
+  const architectTitleHits = ARCHITECT_TITLE_SIGNALS.filter((signal) =>
+    phraseInText(normalizedTitle, signal),
+  ).length;
+  const leadershipScopeHits = LEADERSHIP_SCOPE_SIGNALS.filter((signal) =>
+    phraseInText(normalizedText, signal),
+  ).length;
+  const progressiveExperienceHits = PROGRESSIVE_EXPERIENCE_SIGNALS.filter((signal) =>
+    phraseInText(normalizedText, signal),
+  ).length;
+
+  let titleRealism = 92;
+  let seniorityRealism = 88;
+  let leadershipRealism = 88;
+  let fitCap = 100;
+  let priorityCap = 100;
+  let recommendationCeiling = 'STRONG_CURRENT_FIT';
+
+  const blockingReasons: string[] = [];
+  const cautionReasons: string[] = [];
+
+  const tightenCaps = (
+    nextFitCap: number,
+    nextPriorityCap: number,
+    nextCeiling: string,
+  ) => {
+    fitCap = Math.min(fitCap, nextFitCap);
+    priorityCap = Math.min(priorityCap, nextPriorityCap);
+    recommendationCeiling = applyRecommendationCeiling(
+      recommendationCeiling,
+      nextCeiling,
+    );
+  };
+
+  if (executiveTitleHits > 0) {
+    titleRealism = Math.min(titleRealism, 8);
+    seniorityRealism = Math.min(seniorityRealism, 12);
+    leadershipRealism = Math.min(leadershipRealism, 10);
+    tightenCaps(34, 24, 'NOT_WORTH_PURSUING');
+    blockingReasons.push('executive title scope');
+  }
+
+  if (verySeniorTitleHits > 0) {
+    titleRealism = Math.min(titleRealism, 24);
+    seniorityRealism = Math.min(seniorityRealism, 26);
+    leadershipRealism = Math.min(leadershipRealism, 26);
+    tightenCaps(52, 42, 'STRETCH_BUT_CREDIBLE');
+    blockingReasons.push('very senior title expectations');
+  }
+
+  if (managementTitleHits > 0) {
+    titleRealism = Math.min(titleRealism, 22);
+    seniorityRealism = Math.min(seniorityRealism, 24);
+    leadershipRealism = Math.min(leadershipRealism, 18);
+    tightenCaps(45, 36, 'LOW_PRIORITY');
+    blockingReasons.push('people-management scope');
+  }
+
+  if (leadTitleHits > 0) {
+    titleRealism = Math.min(titleRealism, leadershipScopeHits >= 2 ? 42 : 55);
+    leadershipRealism = Math.min(
+      leadershipRealism,
+      leadershipScopeHits >= 2 ? 36 : 50,
+    );
+    tightenCaps(60, 52, 'STRETCH_BUT_CREDIBLE');
+    cautionReasons.push('lead-level ownership expectations');
+  }
+
+  if (architectTitleHits > 0) {
+    titleRealism = Math.min(titleRealism, leadershipScopeHits >= 2 ? 34 : 52);
+    leadershipRealism = Math.min(
+      leadershipRealism,
+      leadershipScopeHits >= 2 ? 28 : 48,
+    );
+    tightenCaps(58, 48, 'STRETCH_BUT_CREDIBLE');
+    cautionReasons.push(
+      leadershipScopeHits >= 2
+        ? 'architect role appears governance-heavy'
+        : 'architect title may expect broader design ownership',
+    );
+  }
+
+  if (requiredYears !== null && yearsGap > 0) {
+    if (requiredYears >= 8 && yearsGap >= 5) {
+      seniorityRealism = Math.min(seniorityRealism, 16);
+      leadershipRealism = Math.min(leadershipRealism, 22);
+      tightenCaps(38, 28, 'NOT_WORTH_PURSUING');
+      blockingReasons.push(`required experience is ${requiredYears}+ years`);
+    } else if (requiredYears >= 6 && yearsGap >= 3) {
+      seniorityRealism = Math.min(seniorityRealism, 28);
+      leadershipRealism = Math.min(leadershipRealism, 34);
+      tightenCaps(50, 40, 'STRETCH_BUT_CREDIBLE');
+      blockingReasons.push(`years-of-experience gap (${requiredYears}+ years required)`);
+    } else if (yearsGap >= 2) {
+      seniorityRealism = Math.min(seniorityRealism, 54);
+      tightenCaps(66, 58, 'STRETCH_BUT_CREDIBLE');
+      cautionReasons.push(`experience ask is above the current profile (${requiredYears}+ years)`);
+    }
+  }
+
+  if (progressiveExperienceHits > 0) {
+    seniorityRealism = Math.min(seniorityRealism, 34);
+    leadershipRealism = Math.min(leadershipRealism, 38);
+    tightenCaps(56, 46, 'STRETCH_BUT_CREDIBLE');
+    blockingReasons.push('progressive experience expectation');
+  }
+
+  if (leadershipScopeHits >= 5) {
+    leadershipRealism = Math.min(leadershipRealism, 18);
+    seniorityRealism = Math.min(seniorityRealism, 24);
+    tightenCaps(46, 34, 'LOW_PRIORITY');
+    blockingReasons.push('leadership-heavy scope');
+  } else if (leadershipScopeHits >= 3) {
+    leadershipRealism = Math.min(leadershipRealism, 34);
+    tightenCaps(58, 48, 'STRETCH_BUT_CREDIBLE');
+    cautionReasons.push('ownership expectations run above a typical early-career scope');
+  } else if (leadershipScopeHits >= 1) {
+    leadershipRealism = Math.min(leadershipRealism, 58);
+    cautionReasons.push('some leadership/ownership signals are present');
+  }
+
+  const overallRealism = clamp(
+    titleRealism * 0.34 +
+      seniorityRealism * 0.38 +
+      leadershipRealism * 0.28,
+  );
+
+  return {
+    titleRealism,
+    seniorityRealism,
+    leadershipRealism,
+    overallRealism,
+    fitCap,
+    priorityCap,
+    recommendationCeiling,
+    requiredYears,
+    yearsGap,
+    blockingReasons: uniqueStrings(blockingReasons),
+    cautionReasons: uniqueStrings(cautionReasons),
+  };
 }
 
 function calculateSeniorityFit(text: string, title: string, profile: ScoringProfile): number {
@@ -850,6 +1154,7 @@ function buildRiskFlags(
   skillEvaluation: SkillEvaluation,
   seniorityFit: number,
   sponsorshipAnalysis: SponsorshipAnalysis,
+  realismAnalysis: RealismAnalysis,
   text: string,
 ): { riskFlags: string[]; descriptiveRisks: string[]; riskLevel: string } {
   const normalizedText = normalizeForMatch(text);
@@ -875,6 +1180,35 @@ function buildRiskFlags(
     flags.push('Seniority stretch');
     risks.push('Role may require stretching the resume narrative on level and scope.');
     severity += 1;
+  }
+
+  if (realismAnalysis.blockingReasons.length > 0) {
+    flags.push('Seniority mismatch');
+    risks.push(
+      `Primary realism blocker: ${realismAnalysis.blockingReasons
+        .slice(0, 2)
+        .join(', ')}.`,
+    );
+    severity += 2;
+  }
+
+  if (
+    realismAnalysis.leadershipRealism < 40 ||
+    realismAnalysis.cautionReasons.some((reason) =>
+      reason.toLowerCase().includes('lead'),
+    )
+  ) {
+    flags.push('Leadership mismatch');
+    risks.push('Role expects leadership or ownership scope that is above the current profile.');
+    severity += realismAnalysis.leadershipRealism < 30 ? 2 : 1;
+  }
+
+  if (realismAnalysis.requiredYears && realismAnalysis.yearsGap >= 2) {
+    flags.push('Years-of-experience mismatch');
+    risks.push(
+      `Posting asks for ${realismAnalysis.requiredYears}+ years, which is materially above the current experience band.`,
+    );
+    severity += realismAnalysis.yearsGap >= 4 ? 2 : 1;
   }
 
   if (roleFamily.key === 'AI_GENAI' && skillEvaluation.missingCoreSkills.some((skill) =>
@@ -966,6 +1300,7 @@ function buildPositionabilityNote(
   relevantProjects: string[],
   positionabilityScore: number,
   recommendation: string,
+  realismAnalysis: RealismAnalysis,
 ) {
   const projectNames = uniqueStrings(
     relevantProjects.map((project) => project.split(':')[0]?.trim() || project),
@@ -973,6 +1308,12 @@ function buildPositionabilityNote(
   const roleContext = profile.currentRole
     ? `current ${profile.currentRole}`
     : 'saved candidate profile';
+
+  if (realismAnalysis.blockingReasons.length > 0) {
+    return `The stack alignment is real, but the role is not very positionable right now because of ${realismAnalysis.blockingReasons
+      .slice(0, 2)
+      .join(' and ')}.`;
+  }
 
   if (recommendation === 'STRONG_CURRENT_FIT') {
     return `This looks directly positionable from the ${roleContext}, supported by ${projectNames[0] || 'recent project work'} and aligned role-family evidence.`;
@@ -1001,6 +1342,7 @@ function buildStrategicRationale(
   fitScore: number,
   priorityScore: number,
   recommendation: string,
+  realismAnalysis: RealismAnalysis,
   sponsorshipAnalysis: SponsorshipAnalysis,
   salaryText: string | null | undefined,
 ): string {
@@ -1031,6 +1373,14 @@ function buildStrategicRationale(
           .slice(0, 2)
           .join(' and ')}.`
       : 'Project support is lighter, so the story depends more on experience framing.';
+  const realismText =
+    realismAnalysis.blockingReasons.length > 0
+      ? `Strong stack overlap is present, but this is not a realistic target at the current career stage because of ${realismAnalysis.blockingReasons
+          .slice(0, 3)
+          .join(', ')}.`
+      : realismAnalysis.cautionReasons.length > 0
+      ? `Realism check: ${realismAnalysis.cautionReasons.slice(0, 2).join(', ')}.`
+      : 'The title, seniority, and ownership scope look reasonably realistic for the current search.';
   const recommendationText = {
     STRONG_CURRENT_FIT: 'This is a strong current-fit target and worth active pursuit.',
     ADJACENT_HIGH_PRIORITY:
@@ -1053,6 +1403,7 @@ function buildStrategicRationale(
     coreGapText,
     secondaryGapText,
     incidentalText,
+    realismText,
     projectText,
     `Direct fit is ${fitScore}/100 and strategic priority is ${priorityScore}/100.`,
     recommendationText,
@@ -1073,49 +1424,71 @@ export function scoreJob(
   const roleFamily = classifyRoleFamily(title, rawText);
   const skillEvaluation = evaluateSkillFit(roleFamily, combinedText, profile);
   const relevantProjects = extractRelevantProjects(combinedText, profile);
-  const titleFit = calculateTitleFit(title, roleFamily, profile);
-  const seniorityFit = calculateSeniorityFit(rawText, title, profile);
+  const realismAnalysis = analyzeRoleRealism(title, rawText, profile);
+  const titleFit = clamp(
+    calculateTitleFit(title, roleFamily, profile) * 0.25 +
+      realismAnalysis.titleRealism * 0.75,
+  );
+  const seniorityFit = clamp(
+    calculateSeniorityFit(rawText, title, profile) * 0.3 +
+      realismAnalysis.seniorityRealism * 0.7,
+  );
   const strategicAlignment = calculateStrategicAlignment(
     roleFamily,
     titleFit,
     relevantProjects,
   );
   const growthFit = calculateGrowthPotential(roleFamily, skillEvaluation);
-  const positionabilityScore = calculatePositionability(
+  const basePositionabilityScore = calculatePositionability(
     profile,
     roleFamily,
     skillEvaluation,
     seniorityFit,
     relevantProjects,
   );
+  const positionabilityScore = clamp(
+    basePositionabilityScore * 0.55 + realismAnalysis.overallRealism * 0.45,
+  );
   const locationFit = calculateLocationFit(location, profile);
   const sponsorshipAnalysis = analyzeSponsorshipSignals(combinedText, profile);
-  const fitScore = clamp(
+  const realismPenalty = clamp((100 - realismAnalysis.overallRealism) * 0.22, 0, 28);
+  const rawFitScore = clamp(
     titleFit * SCORE_WEIGHTS.fitScore.familyAlignment +
       skillEvaluation.coreFitScore * SCORE_WEIGHTS.fitScore.coreFit +
       seniorityFit * SCORE_WEIGHTS.fitScore.seniorityFit +
       positionabilityScore * SCORE_WEIGHTS.fitScore.positionability +
       growthFit * SCORE_WEIGHTS.fitScore.growthFit,
   );
-  const priorityScore = clamp(
+  const fitScore = clamp(
+    Math.min(rawFitScore - realismPenalty, realismAnalysis.fitCap),
+  );
+  const rawPriorityScore = clamp(
     strategicAlignment * SCORE_WEIGHTS.priorityScore.strategicAlignment +
       fitScore * SCORE_WEIGHTS.priorityScore.fitScore +
       positionabilityScore * SCORE_WEIGHTS.priorityScore.positionability +
       growthFit * SCORE_WEIGHTS.priorityScore.growthFit,
+  );
+  const priorityScore = clamp(
+    Math.min(rawPriorityScore - realismPenalty * 1.1, realismAnalysis.priorityCap),
   );
   const riskSummary = buildRiskFlags(
     roleFamily,
     skillEvaluation,
     seniorityFit,
     sponsorshipAnalysis,
+    realismAnalysis,
     combinedText,
   );
-  const pursuitRecommendation = determinePursuitRecommendation(
+  const baseRecommendation = determinePursuitRecommendation(
     fitScore,
     priorityScore,
     positionabilityScore,
     riskSummary.riskLevel,
     roleFamily,
+  );
+  const pursuitRecommendation = applyRecommendationCeiling(
+    baseRecommendation,
+    realismAnalysis.recommendationCeiling,
   );
   const positionabilityNote = buildPositionabilityNote(
     roleFamily,
@@ -1123,6 +1496,7 @@ export function scoreJob(
     relevantProjects,
     positionabilityScore,
     pursuitRecommendation,
+    realismAnalysis,
   );
   const strategicRationale = buildStrategicRationale(
     companyName,
@@ -1132,6 +1506,7 @@ export function scoreJob(
     round(fitScore),
     round(priorityScore),
     pursuitRecommendation,
+    realismAnalysis,
     sponsorshipAnalysis,
     salaryText,
   );
@@ -1145,6 +1520,11 @@ export function scoreJob(
     skillEvaluation.missingCoreSkills.length > 0
       ? `Critical gaps: ${skillEvaluation.missingCoreSkills.slice(0, 3).join(', ')}.`
       : 'Critical gaps are limited.',
+    realismAnalysis.blockingReasons.length > 0
+      ? `Real blocker: ${realismAnalysis.blockingReasons.slice(0, 3).join(', ')}.`
+      : realismAnalysis.cautionReasons.length > 0
+      ? `Main caution: ${realismAnalysis.cautionReasons.slice(0, 2).join(', ')}.`
+      : 'Seniority and scope look reasonably realistic.',
     sponsorshipAnalysis.negativeSignals.length > 0
       ? `Sponsorship restrictions detected: ${sponsorshipAnalysis.negativeSignals
           .slice(0, 2)

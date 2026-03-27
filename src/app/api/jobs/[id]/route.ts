@@ -128,17 +128,26 @@ export async function PATCH(
         });
       }
 
-      if (parsedStatus === JobStatus.APPLIED) {
+      if (
+        parsedStatus === JobStatus.APPLIED ||
+        parsedStatus === JobStatus.REVIEW_OPENED
+      ) {
         await tx.application.upsert({
           where: { jobId: params.id },
           update: {
-            method: ApplyMethod.MANUAL_OPEN,
+            method:
+              parsedStatus === JobStatus.REVIEW_OPENED
+                ? ApplyMethod.BROWSER_PREFILL
+                : ApplyMethod.MANUAL_OPEN,
             appliedAt: new Date(),
             status: 'PENDING',
           },
           create: {
             jobId: params.id,
-            method: ApplyMethod.MANUAL_OPEN,
+            method:
+              parsedStatus === JobStatus.REVIEW_OPENED
+                ? ApplyMethod.BROWSER_PREFILL
+                : ApplyMethod.MANUAL_OPEN,
             appliedAt: new Date(),
             adapterUsed: null,
             status: 'PENDING',

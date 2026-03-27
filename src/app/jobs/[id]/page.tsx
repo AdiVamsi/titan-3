@@ -68,6 +68,36 @@ interface Job {
   reviewPacket?: ReviewPacket | null;
 }
 
+const WORKFLOW_STATUS_OPTIONS = [
+  'NEW',
+  'INGESTED',
+  'NORMALIZED',
+  'SCORED',
+  'READY',
+  'REVIEWING',
+  'REVIEW_OPENED',
+  'APPLIED',
+  'FOLLOW_UP',
+  'SKIPPED',
+  'ARCHIVED',
+  'APPLY_FAILED',
+] as const;
+
+const WORKFLOW_STATUS_LABELS: Record<(typeof WORKFLOW_STATUS_OPTIONS)[number], string> = {
+  NEW: 'New',
+  INGESTED: 'Ingested',
+  NORMALIZED: 'Normalized',
+  SCORED: 'Scored',
+  READY: 'Ready',
+  REVIEWING: 'Reviewing',
+  REVIEW_OPENED: 'Review Opened',
+  APPLIED: 'Applied',
+  FOLLOW_UP: 'Follow Up',
+  SKIPPED: 'Skipped',
+  ARCHIVED: 'Archived',
+  APPLY_FAILED: 'Apply Failed',
+};
+
 export default function JobDetail() {
   const params = useParams();
   const router = useRouter();
@@ -78,6 +108,8 @@ export default function JobDetail() {
   const [error, setError] = useState<string | null>(null);
   const [packetLoading, setPacketLoading] = useState(false);
   const [packetError, setPacketError] = useState<string | null>(null);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
@@ -105,17 +137,27 @@ export default function JobDetail() {
     if (!job) return;
 
     try {
+      setStatusSaving(true);
+      setStatusMessage(null);
       const response = await fetch(`/api/jobs/${job.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
       });
 
-      if (!response.ok) throw new Error('Failed to update status');
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || data.message || 'Failed to update status');
+      }
       setJob(data.job || data.data || null);
+      setStatusMessage(`Workflow status updated to ${newStatus.replace(/_/g, ' ')}.`);
     } catch (err) {
+      setStatusMessage(
+        err instanceof Error ? err.message : 'Failed to update workflow status.',
+      );
       console.error('Error updating status:', err);
+    } finally {
+      setStatusSaving(false);
     }
   };
 
@@ -554,6 +596,27 @@ export default function JobDetail() {
 
           {/* Action buttons */}
           <div className="space-y-3">
+            <div className="card-compact space-y-3">
+              <div>
+                <p className="text-xs text-gray-500 uppercase mb-2">Workflow Status</p>
+                <select
+                  value={job.status}
+                  onChange={(event) => handleStatusChange(event.target.value)}
+                  disabled={statusSaving}
+                  className="input w-full"
+                >
+                  {WORKFLOW_STATUS_OPTIONS.map((statusOption) => (
+                    <option key={statusOption} value={statusOption}>
+                      {WORKFLOW_STATUS_LABELS[statusOption]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {statusMessage && (
+                <p className="text-xs text-gray-400">{statusMessage}</p>
+              )}
+            </div>
+
             <ApplyButton
               jobId={job.id}
               status={job.status}

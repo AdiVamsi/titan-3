@@ -199,6 +199,18 @@ export function buildJobOrderBy(
 export function formatRecommendationLabel(recommendation?: string | null) {
   if (!recommendation) return null;
 
+  if (recommendation === 'ADJACENT_HIGH_PRIORITY') {
+    return 'Good Adjacent Fit';
+  }
+
+  if (recommendation === 'STRETCH_BUT_CREDIBLE') {
+    return 'Stretch';
+  }
+
+  if (recommendation === 'LOW_PRIORITY' || recommendation === 'NOT_WORTH_PURSUING') {
+    return 'Skip';
+  }
+
   return recommendation
     .toLowerCase()
     .split('_')
@@ -225,6 +237,7 @@ export function deriveDecisionState(job: JobLike): DecisionState {
       return 'GOOD_ADJACENT_FIT';
     case 'STRETCH_BUT_CREDIBLE':
       return 'STRETCH';
+    case 'LOW_PRIORITY':
     case 'NOT_WORTH_PURSUING':
       return 'SKIP';
     default:

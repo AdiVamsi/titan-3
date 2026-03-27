@@ -1,0 +1,293 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Enums
+
+enum JobStatus {
+  NEW
+  INGESTED
+  NORMALIZED
+  SCORED
+  READY
+  REVIEWING
+  REVIEW_OPENED
+  APPLIED
+  SKIPPED
+  FOLLOW_UP
+  ARCHIVED
+  APPLY_FAILED
+}
+
+enum SourceType {
+  GREENHOUSE
+  LEVER
+  DICE
+  INDEED
+  LINKEDIN
+  MANUAL
+  BROWSER
+  OTHER
+}
+
+enum WorkplaceType {
+  REMOTE
+  HYBRID
+  ONSITE
+  UNKNOWN
+}
+
+enum SponsorshipRisk {
+  SAFE
+  LIKELY_SAFE
+  UNCERTAIN
+  RISKY
+  BLOCKED
+}
+
+enum ApplyMethod {
+  ADAPTER_SUBMIT
+  BROWSER_PREFILL
+  MANUAL_OPEN
+  NOT_ATTEMPTED
+}
+
+// Models
+
+model Job {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  externalId        String?
+  sourceType        SourceType
+  sourceUrl         String
+  canonicalUrl      String?        @unique
+  adapterId         String?
+  companyName       String
+  companyId         String?
+  title             String
+  location          String?
+  workplaceType     WorkplaceType  @default(UNKNOWN)
+  salaryText        String?
+  postedAt          DateTime?
+  status            JobStatus      @default(NEW)
+  sponsorshipRisk   SponsorshipRisk @default(UNCERTAIN)
+  fitScore          Float?
+
+  // Relations
+  company           Company?       @relation(fields: [companyId], references: [id])
+  content           JobContent?
+  score             JobScore?
+  packet            ReviewPacket?
+  application       Application?
+  followUps         FollowUp[]
+  auditLogs         AuditLog[]
+
+  @@index([status])
+  @@index([fitScore])
+  @@index([companyName])
+  @@index([companyId])
+}
+
+model JobContent {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  jobId             String         @unique
+  rawText           String         @db.Text
+  cleanedText       String?        @db.Text
+  requirements      String[]
+  niceToHaves       String[]
+  responsibilities  String[]
+
+  // Relations
+  job               Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}
+
+model JobScore {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  jobId             String         @unique
+  roleFamily        String?
+  familyConfidence  Float?
+  titleFit          Float
+  skillsFit         Float
+  seniorityFit      Float
+  aiRelevance       Float
+  backendRelevance  Float
+  locationFit       Float
+  sponsorshipRisk   Float
+  priorityScore     Float?
+  positionabilityScore Float?
+  riskLevel         String?
+  pursuitRecommendation String?
+  overallScore      Float
+  rationale         String         @db.Text
+  strategicRationale String?       @db.Text
+  positionabilityNote String?      @db.Text
+  riskFlags         String[]
+  matchedSkills     String[]
+  missingSkills     String[]
+  matchedCoreSkills String[]
+  missingCoreSkills String[]
+  missingSecondarySkills String[]
+  incidentalMismatches String[]
+  keywordGaps       String[]
+  relevantProjects  String[]
+  risks             String[]
+
+  // Relations
+  job               Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}
+
+model ReviewPacket {
+  id                    String         @id @default(cuid())
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+  jobId                 String         @unique
+  resumeEmphasis        String[]
+  summaryRewrite        String?        @db.Text
+  bulletsToHighlight    String[]
+  outreachDraft         String?        @db.Text
+  interviewPrepBullets  String[]
+  risks                 String[]
+  whyApply              String?        @db.Text
+  sponsorNotes          String?        @db.Text
+  generatedBy           String
+
+  // Relations
+  job                   Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}
+
+model Application {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  jobId             String         @unique
+  method            ApplyMethod
+  appliedAt         DateTime?
+  adapterUsed       String?
+  submissionPayload Json?
+  responseData      Json?
+  status            String         @default("PENDING")
+  notes             String?        @db.Text
+
+  // Relations
+  job               Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+}
+
+model FollowUp {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  jobId             String
+  dueDate           DateTime
+  action            String
+  completed         Boolean        @default(false)
+  completedAt       DateTime?
+  notes             String?        @db.Text
+
+  // Relations
+  job               Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([dueDate])
+}
+
+model Company {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  name              String
+  domain            String?        @unique
+  industry          String?
+  size              String?
+  sponsorHistory    String?
+  notes             String?        @db.Text
+
+  // Relations
+  jobs              Job[]
+  recruiterContacts RecruiterContact[]
+}
+
+model RecruiterContact {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  companyId         String?
+  name              String
+  title             String?
+  email             String?
+  linkedinUrl       String?
+  notes             String?        @db.Text
+
+  // Relations
+  company           Company?       @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@index([companyId])
+}
+
+model AdapterCapability {
+  id                        String         @id @default(cuid())
+  createdAt                 DateTime       @default(now())
+  updatedAt                 DateTime       @updatedAt
+  adapterId                 String         @unique
+  sourceType                SourceType
+  canIngest                 Boolean        @default(false)
+  canApply                  Boolean        @default(false)
+  canPrefill                Boolean        @default(false)
+  requiresHumanReview       Boolean        @default(true)
+  supportsResumeUpload      Boolean        @default(false)
+  supportsQuestionHandling  Boolean        @default(false)
+  notes                     String?
+}
+
+model AuditLog {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  jobId             String?
+  action            String
+  actor             String
+  details           Json?
+  timestamp         DateTime       @default(now())
+
+  // Relations
+  job               Job?           @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([jobId])
+  @@index([timestamp])
+}
+
+model ResumeProfile {
+  id                String         @id @default(cuid())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  label             String         @default("primary") @unique
+  fullName          String?
+  headline          String?
+  summary           String?        @db.Text
+  currentRole       String?
+  rawResumeText     String?        @db.Text
+  skills            String[]
+  aiSkills          String[]
+  backendSkills     String[]
+  projects          String[]
+  targetTitles      String[]
+  coreSkills        String[]
+  preferredSkills   String[]
+  experienceYears   Float
+  workAuth          String
+  locationPref      String?
+  preferredLocations String[]
+  remotePreference  String?
+  notes             String?        @db.Text
+}

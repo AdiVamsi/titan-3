@@ -1,0 +1,41 @@
+{
+  "name": "titan3-console",
+  "version": "1.0.0",
+  "description": "Titan-3 Review Console - Job hunt dashboard with AI scoring and application management",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "db:push": "prisma db push",
+    "db:seed": "node prisma/seed.js",
+    "db:studio": "prisma studio"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "next": "^14.2.3",
+    "@prisma/client": "^5.12.0",
+    "prisma": "^5.12.0",
+    "bullmq": "^5.7.2",
+    "ioredis": "^5.3.2",
+    "playwright": "^1.43.0",
+    "tailwindcss": "^3.4.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "@anthropic-ai/sdk": "^0.16.0",
+    "openai": "^4.52.0",
+    "lucide-react": "^0.372.0",
+    "date-fns": "^3.3.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.3",
+    "@types/node": "^20.11.19",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.3"
+  }
+}

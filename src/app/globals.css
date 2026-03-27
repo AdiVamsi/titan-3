@@ -1,0 +1,133 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+@layer base {
+  * {
+    @apply border-gray-800;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-[#0a0a0a] text-gray-100;
+    font-feature-settings: "rounding" 1;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply text-gray-50;
+  }
+
+  a {
+    @apply transition-colors;
+  }
+
+  button {
+    @apply transition-all duration-200;
+  }
+
+  input, textarea, select {
+    @apply bg-gray-900 text-gray-100 border-gray-700 focus:border-gray-600 focus:outline-none;
+  }
+
+  ::placeholder {
+    @apply text-gray-500;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-[#111] border border-gray-800 rounded-lg p-6 transition-all hover:border-gray-700;
+  }
+
+  .card-compact {
+    @apply bg-[#111] border border-gray-800 rounded-lg p-4 transition-all;
+  }
+
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200;
+  }
+
+  .btn-primary {
+    @apply btn bg-green-600 hover:bg-green-700 text-white disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply btn bg-gray-800 hover:bg-gray-700 text-gray-100 border border-gray-700;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent hover:bg-gray-800 text-gray-300 border border-transparent hover:border-gray-700;
+  }
+
+  .btn-sm {
+    @apply px-3 py-1 text-sm;
+  }
+
+  .btn-xs {
+    @apply px-2 py-1 text-xs;
+  }
+
+  .badge {
+    @apply inline-flex items-center justify-center rounded-full px-3 py-1 text-sm font-medium;
+  }
+
+  .badge-primary {
+    @apply badge bg-blue-900 text-blue-100;
+  }
+
+  .badge-success {
+    @apply badge bg-green-900 text-green-100;
+  }
+
+  .badge-warning {
+    @apply badge bg-yellow-900 text-yellow-100;
+  }
+
+  .badge-error {
+    @apply badge bg-red-900 text-red-100;
+  }
+
+  .badge-neutral {
+    @apply badge bg-gray-700 text-gray-100;
+  }
+
+  .table-row-hover {
+    @apply hover:bg-gray-800 transition-colors;
+  }
+
+  .input {
+    @apply bg-gray-900 text-gray-100 border border-gray-700 rounded-lg px-4 py-2 focus:border-gray-600 focus:outline-none transition-colors;
+  }
+
+  .text-muted {
+    @apply text-gray-400;
+  }
+
+  .text-subtle {
+    @apply text-gray-500;
+  }
+
+  .divider {
+    @apply border-t border-gray-800;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  @apply w-2 h-2;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-900;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-700 rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-600;
+}

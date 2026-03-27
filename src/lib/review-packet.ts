@@ -75,6 +75,10 @@ function isSkipLikeRecommendation(recommendation?: string | null) {
   return recommendation === 'LOW_PRIORITY' || recommendation === 'NOT_WORTH_PURSUING';
 }
 
+function isHighRiskLevel(riskLevel?: string | null) {
+  return (riskLevel || '').toUpperCase() === 'HIGH';
+}
+
 function cleanList(items: Array<string | null | undefined>, limit = 6) {
   return Array.from(
     new Set(
@@ -117,6 +121,8 @@ export function buildDeterministicPacket(
 ): PacketPayload {
   const recommendationLabel = formatRecommendationLabel(job.score?.pursuitRecommendation);
   const isSkipLike = isSkipLikeRecommendation(job.score?.pursuitRecommendation);
+  const isHighRisk = isHighRiskLevel(job.score?.riskLevel);
+  const requiresCautionaryRewrite = isSkipLike || isHighRisk;
   const matchedSkills = cleanList(
     job.score?.matchedCoreSkills || job.score?.matchedSkills || [],
     5,
@@ -148,27 +154,49 @@ export function buildDeterministicPacket(
   const realismGuidance =
     isSkipLike
       ? 'This role is not worth prioritizing right now.'
+      : isHighRisk
+      ? 'This role carries a high-risk profile and needs caution before investing serious effort.'
       : recommendationLabel === 'Stretch'
       ? 'This role is only worth selective effort and needs careful judgment.'
       : recommendationLabel === 'Good Adjacent Fit'
       ? 'This role is believable as an adjacent move if positioned carefully.'
       : 'This role is a realistic current target.';
+  const scoreAlignedReason = requiresCautionaryRewrite
+    ? cleanList([
+        job.score?.positionabilityNote || null,
+        coreRiskFlags[0] ? `Main blocker: ${coreRiskFlags[0]}.` : null,
+        missingSkills.length > 0
+          ? `Largest gaps are ${missingSkills.join(', ')}.`
+          : null,
+        keywordGaps.length > 0
+          ? `The JD also leans on ${keywordGaps.join(', ')}.`
+          : null,
+      ], 2).join(' ')
+    : job.score?.strategicRationale ||
+      job.score?.rationale ||
+      'The role shows usable overlap with the current profile.';
 
   const whyApply = [
     `${job.title} at ${job.companyName} sits in the ${job.score?.roleFamily || 'current target'} lane.`,
     scoreSnapshot,
     `Current recommendation: ${recommendationLabel}.`,
     realismGuidance,
-    job.score?.strategicRationale || job.score?.rationale || 'The role shows usable overlap with the current profile.',
+    scoreAlignedReason,
   ].join(' ');
 
   const summaryRewrite = [
     `${recommendationLabel} for ${job.title} at ${job.companyName}.`,
     scoreSnapshot,
-    matchedSkills.length > 0
+    requiresCautionaryRewrite
+      ? matchedSkills.length > 0
+        ? `There is some overlap in ${matchedSkills.join(', ')}, but it does not offset the current realism and risk profile.`
+        : 'The current profile does not show enough direct overlap to justify active pursuit.'
+      : matchedSkills.length > 0
       ? `Lean into ${matchedSkills.join(', ')} when positioning experience.`
       : 'Lean into transferable backend and AI experience when positioning experience.',
-    missingSkills.length > 0
+    requiresCautionaryRewrite && coreRiskFlags.length > 0
+      ? `Primary concerns: ${coreRiskFlags.join(', ')}.`
+      : missingSkills.length > 0
       ? `Be ready to address gaps around ${missingSkills.join(', ')}.`
       : missingSecondary.length > 0
       ? `Most missing items look secondary rather than role-defining: ${missingSecondary.join(', ')}.`
@@ -184,14 +212,18 @@ export function buildDeterministicPacket(
   const outreachDraft = [
     isSkipLike
       ? `This is not a priority outreach target right now because the current scoring recommends ${recommendationLabel.toLowerCase()}.`
+      : isHighRisk
+      ? `This role should stay a cautious outreach target because the current scoring flags a high-risk profile.`
       : `Hi ${job.companyName} team, I’m interested in the ${job.title} role.`,
-    isSkipLike
+    requiresCautionaryRewrite
       ? `If pursued at all, the application would need to address ${coreRiskFlags.slice(0, 2).join(' and ') || 'the current realism concerns'} directly.`
       : matchedSkills.length > 0
       ? `My background lines up well with ${matchedSkills.slice(0, 3).join(', ')} and adjacent backend/AI work.`
       : 'My background lines up well with backend and applied AI engineering work.',
     isSkipLike
       ? 'Spend limited time here unless there is a special strategic reason to pursue it.'
+      : isHighRisk
+      ? 'Keep any outreach timeboxed until the risk items are resolved.'
       : `I’d welcome the chance to discuss fit for the role and the problems your team is solving.`,
   ].join(' ');
 
@@ -250,55 +282,16 @@ export function alignPacketWithCurrentScore(
   job: PacketJobInput,
   candidateProfile: ActiveCandidateProfile = buildFallbackCandidateProfile(),
 ): PacketPayload {
-  const recommendationLabel = formatRecommendationLabel(job.score?.pursuitRecommendation);
-  const riskLevel = job.score?.riskLevel || 'UNKNOWN';
-  const scoreLine = `Current scoring: fit ${job.score?.overallScore ?? 0}/100, priority ${job.score?.priorityScore ?? 0}/100, positionability ${job.score?.positionabilityScore ?? 0}/100.`;
-  const headline = `${recommendationLabel} for ${job.title} at ${job.companyName}.`;
-  const riskFlags = cleanList(job.score?.riskFlags || [], 5);
-  const scoreRisks = cleanList(job.score?.risks || [], 6);
-  const sponsorshipAnalysis = analyzeSponsorshipSignals(
-    job.content?.cleanedText || job.content?.rawText || '',
-    candidateProfile,
-  );
-  const sponsorshipText =
-    sponsorshipAnalysis.negativeSignals.length > 0
-      ? `Sponsorship caution: ${sponsorshipAnalysis.negativeSignals.slice(0, 2).join(', ')}.`
-      : '';
-  const rationaleText =
-    job.score?.strategicRationale ||
-    job.score?.rationale ||
-    packet.whyApply ||
-    packet.summaryRewrite ||
-    '';
+  const deterministicPacket = buildDeterministicPacket(job, candidateProfile);
 
   return normalizePacketPayload(
     {
       ...packet,
-      summaryRewrite: [
-        headline,
-        scoreLine,
-        rationaleText,
-      ]
-        .filter(Boolean)
-        .join(' '),
-      whyApply: [
-        `${job.title} is currently classified as ${recommendationLabel} in the ${job.score?.roleFamily || 'current target'} family.`,
-        scoreLine,
-        rationaleText,
-      ]
-        .filter(Boolean)
-        .join(' '),
-      risks: cleanList([
-        `Current risk level: ${riskLevel}.`,
-        ...riskFlags,
-        ...scoreRisks,
-        ...cleanList(packet.risks || [], 8),
-        sponsorshipText || null,
-      ], 10),
-      sponsorNotes: [candidateProfile.workAuth, sponsorshipText, packet.sponsorNotes]
-        .filter(Boolean)
-        .join(' ')
-        .trim(),
+      summaryRewrite: deterministicPacket.summaryRewrite,
+      whyApply: deterministicPacket.whyApply,
+      outreachDraft: deterministicPacket.outreachDraft,
+      risks: deterministicPacket.risks,
+      sponsorNotes: deterministicPacket.sponsorNotes,
     },
     candidateProfile.workAuth,
   );

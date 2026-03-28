@@ -1,8 +1,8 @@
 /**
  * BullMQ Worker for Job Ingestion
  * Processes ingestion jobs from adapters or manual entry
- * Creates Job and JobContent records in database
- * Handles deduplication by canonical URL
+ * Stages raw jobs, applies deterministic intake filters,
+ * and only creates Job records for ACCEPT decisions.
  */
 
 import { Worker, Job } from 'bullmq';
@@ -11,6 +11,8 @@ import { PrismaClient } from '@prisma/client';
 import { getAdapterById } from '../adapters/registry';
 import { manualAdapter, ManualIngestConfig } from '../adapters/manual';
 import { IngestConfig } from '../adapters/base';
+import { buildStagedJobInputFromNormalizedJob, stageAndProcessIncomingJob } from '../lib/job-intake';
+import { NormalizedJob } from '../lib/types';
 
 const prisma = new PrismaClient();
 
@@ -43,7 +45,7 @@ const worker = new Worker<IngestJobData>(
     console.log(`[INGEST] Processing job ${job.id}`, job.data);
 
     try {
-      let normalizedJobs = [];
+      let normalizedJobs: NormalizedJob[] = [];
       let source = '';
 
       // Handle manual ingestion
@@ -102,97 +104,45 @@ const worker = new Worker<IngestJobData>(
         };
       }
 
-      // Process and store jobs
+      // Stage, filter, and selectively accept jobs
+      let stagedCount = 0;
       let jobsCreated = 0;
       let jobsDuplicated = 0;
+      let reviewCount = 0;
+      let rejectedCount = 0;
 
       for (const normalizedJob of normalizedJobs) {
         try {
-          // Check for duplicates by canonical URL
-          let canonicalUrl = normalizedJob.sourceUrl;
-
-          // Normalize URL for deduplication (remove query params, fragments, etc.)
-          try {
-            const url = new URL(normalizedJob.sourceUrl);
-            canonicalUrl = `${url.protocol}//${url.host}${url.pathname}`;
-          } catch {
-            // If URL parsing fails, use as-is
-          }
-
-          const existingJob = await prisma.job.findUnique({
-            where: { canonicalUrl },
-          });
-
-          if (existingJob) {
-            console.log(
-              `[INGEST] Duplicate job detected: ${normalizedJob.title} at ${normalizedJob.company}`,
-            );
-            jobsDuplicated++;
-            continue;
-          }
-
-          // Get or create company
-          let company = await prisma.company.findUnique({
-            where: { name: normalizedJob.company },
-          });
-
-          if (!company) {
-            company = await prisma.company.create({
-              data: {
-                name: normalizedJob.company,
-                domain: normalizedJob.companyUrl,
-              },
-            });
-            console.log(`[INGEST] Created company: ${company.name}`);
-          }
-
-          // Create job record
-          const createdJob = await prisma.job.create({
-            data: {
-              sourceType: normalizedJob.sourceType,
-              sourceUrl: normalizedJob.sourceUrl,
-              canonicalUrl,
-              title: normalizedJob.title,
-              companyName: normalizedJob.company,
-              companyId: company.id,
-              location: normalizedJob.location || null,
-              workplaceType: normalizedJob.workplaceType,
-              salaryText: null,
-              adapterId: source,
-              status: 'INGESTED',
-              sponsorshipRisk: 'UNCERTAIN',
-            },
-          });
-
-          // Create job content record
-          await prisma.jobContent.create({
-            data: {
-              jobId: createdJob.id,
-              rawText: normalizedJob.rawContent,
-              requirements: normalizedJob.requiredSkills || [],
-              niceToHaves: normalizedJob.preferredSkills || [],
-              responsibilities: [],
-            },
-          });
-
-          // Create audit log
-          await prisma.auditLog.create({
-            data: {
-              jobId: createdJob.id,
-              action: 'INGESTED',
-              actor: 'INGEST_WORKER',
-              details: {
-                source,
-                title: normalizedJob.title,
-                company: normalizedJob.company,
-              },
-            },
-          });
-
-          console.log(
-            `[INGEST] Created job: ${createdJob.id} - ${normalizedJob.title} at ${normalizedJob.company}`,
+          const result = await stageAndProcessIncomingJob(
+            prisma,
+            buildStagedJobInputFromNormalizedJob(normalizedJob, source),
           );
-          jobsCreated++;
+
+          stagedCount++;
+
+          if (result.stagedJob.dedupeReason) {
+            jobsDuplicated++;
+          }
+
+          switch (result.stagedJob.filterDecision) {
+            case 'ACCEPT':
+              if (result.acceptedJob) {
+                console.log(
+                  `[INGEST] Accepted job: ${result.acceptedJob.id} - ${normalizedJob.title} at ${normalizedJob.company}`,
+                );
+                jobsCreated++;
+              } else {
+                rejectedCount++;
+              }
+              break;
+            case 'REVIEW':
+              reviewCount++;
+              break;
+            case 'REJECT':
+            default:
+              rejectedCount++;
+              break;
+          }
         } catch (jobError) {
           console.error(
             `[INGEST] Error processing individual job: ${normalizedJob.title}`,
@@ -204,7 +154,10 @@ const worker = new Worker<IngestJobData>(
       const result = {
         success: true,
         jobsProcessed: normalizedJobs.length,
+        stagedCount,
         jobsCreated,
+        reviewCount,
+        rejectedCount,
         jobsDuplicated,
         source,
       };

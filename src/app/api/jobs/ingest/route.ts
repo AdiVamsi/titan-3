@@ -3,14 +3,17 @@
  * POST /api/jobs/ingest - Ingest jobs from source or manual entry
  */
 
-import { SourceType, WorkplaceType } from '@prisma/client';
+import { SourceType, StagedJobDecision } from '@prisma/client';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import { getAdapterById } from '@/adapters/registry';
 import prisma from '@/lib/db';
+import {
+  buildStagedJobInputFromNormalizedJob,
+  stageAndProcessIncomingJob,
+} from '@/lib/job-intake';
 import { serializeJob } from '@/lib/job-contract';
-import { normalizeAndScoreJob, WORKFLOW_JOB_INCLUDE } from '@/lib/job-workflow';
 
 const IngestConfigSchema = z
   .object({
@@ -151,13 +154,23 @@ function normalizeIngestRequest(input: z.infer<typeof IngestSchema>): Normalized
   throw new Error('Unsupported ingest request shape');
 }
 
-function buildSummaryMessage(ingested: number, duplicates: number, errors: string[]) {
-  if (ingested > 0) {
-    return `Ingested ${ingested} job${ingested === 1 ? '' : 's'}.`;
+function buildSummaryMessage(
+  accepted: number,
+  review: number,
+  rejected: number,
+  duplicates: number,
+  errors: string[],
+) {
+  if (accepted > 0) {
+    return `Accepted ${accepted} job${accepted === 1 ? '' : 's'} into Titan-3, kept ${review} in review, and rejected ${rejected}.`;
+  }
+
+  if (review > 0) {
+    return `No jobs were auto-accepted. ${review} job${review === 1 ? '' : 's'} moved to review and ${rejected} were rejected.`;
   }
 
   if (duplicates > 0 && errors.length === 0) {
-    return 'No new jobs were added because they already exist.';
+    return 'No jobs were accepted because they were duplicates or already staged.';
   }
 
   if (errors.length > 0) {
@@ -172,67 +185,81 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const ingestRequest = normalizeIngestRequest(IngestSchema.parse(body));
 
-    let ingestedCount = 0;
+    let stagedCount = 0;
+    let acceptedCount = 0;
+    let reviewCount = 0;
+    let rejectedCount = 0;
     let duplicateCount = 0;
     const errors: string[] = [];
     const processedJobs: Array<ReturnType<typeof serializeJob>> = [];
+    const stagedItems: Array<{
+      id: string;
+      pipelineState: string;
+      filterDecision: string | null;
+      filterReasons: string[];
+      dedupeReason: string | null;
+      normalizedRoleFamily: string | null;
+      freshnessBucket: string;
+      openStatus: string;
+      acceptedJobId: string | null;
+    }> = [];
+
+    const recordStageResult = (
+      result: Awaited<ReturnType<typeof stageAndProcessIncomingJob>>,
+    ) => {
+      stagedCount++;
+      stagedItems.push({
+        id: result.stagedJob.id,
+        pipelineState: result.stagedJob.pipelineState,
+        filterDecision: result.stagedJob.filterDecision,
+        filterReasons: result.stagedJob.filterReasons,
+        dedupeReason: result.stagedJob.dedupeReason,
+        normalizedRoleFamily: result.stagedJob.normalizedRoleFamily,
+        freshnessBucket: result.stagedJob.freshnessBucket,
+        openStatus: result.stagedJob.openStatus,
+        acceptedJobId: result.stagedJob.acceptedJobId,
+      });
+
+      if (result.stagedJob.dedupeReason) {
+        duplicateCount++;
+      }
+
+      switch (result.stagedJob.filterDecision) {
+        case StagedJobDecision.ACCEPT:
+          if (result.acceptedJob) {
+            acceptedCount++;
+            processedJobs.push(serializeJob(result.acceptedJob));
+          } else {
+            rejectedCount++;
+          }
+          break;
+        case StagedJobDecision.REVIEW:
+          reviewCount++;
+          break;
+        case StagedJobDecision.REJECT:
+        default:
+          rejectedCount++;
+          break;
+      }
+    };
 
     if (ingestRequest.mode === 'manual') {
       try {
-        const existingJob = await prisma.job.findFirst({
-          where: {
-            OR: [
-              { sourceUrl: ingestRequest.url },
-              { canonicalUrl: ingestRequest.url },
-            ],
+        const result = await stageAndProcessIncomingJob(prisma, {
+          sourceName: 'manual',
+          sourceType: ingestRequest.sourceType || SourceType.MANUAL,
+          sourceUrl: ingestRequest.url,
+          canonicalUrl: ingestRequest.url,
+          rawTitle: ingestRequest.title,
+          rawCompany: ingestRequest.companyName,
+          rawDescription: ingestRequest.rawText,
+          metadata: {
+            seenInLiveSource: false,
+            submittedFrom: 'manual-ingest',
           },
         });
 
-        if (existingJob) {
-          duplicateCount = 1;
-        } else {
-          const createdJob = await prisma.job.create({
-            data: {
-              title: ingestRequest.title,
-              companyName: ingestRequest.companyName,
-              sourceUrl: ingestRequest.url,
-              sourceType: ingestRequest.sourceType || SourceType.MANUAL,
-              canonicalUrl: ingestRequest.url,
-              status: 'INGESTED',
-              workplaceType: WorkplaceType.UNKNOWN,
-              content: {
-                create: {
-                  rawText: ingestRequest.rawText,
-                  requirements: [],
-                  niceToHaves: [],
-                  responsibilities: [],
-                },
-              },
-            },
-          });
-
-          if (createdJob) {
-            ingestedCount = 1;
-
-            try {
-              const result = await normalizeAndScoreJob(prisma, createdJob.id);
-              processedJobs.push(serializeJob(result.job));
-            } catch (workflowError) {
-              errors.push(
-                `Job created but scoring failed: ${workflowError instanceof Error ? workflowError.message : String(workflowError)}`,
-              );
-
-              const fallbackJob = await prisma.job.findUnique({
-                where: { id: createdJob.id },
-                include: WORKFLOW_JOB_INCLUDE,
-              });
-
-              if (fallbackJob) {
-                processedJobs.push(serializeJob(fallbackJob));
-              }
-            }
-          }
-        }
+        recordStageResult(result);
       } catch (err) {
         errors.push(
           `Failed to ingest manual job: ${err instanceof Error ? err.message : String(err)}`,
@@ -262,63 +289,15 @@ export async function POST(request: NextRequest) {
 
         for (const normalizedJob of result.jobs) {
           try {
-            const canonicalUrl = normalizedJob.applyUrl || normalizedJob.sourceUrl || normalizedJob.id;
-            const existingJob = await prisma.job.findUnique({
-              where: { canonicalUrl },
-            });
+            const stageResult = await stageAndProcessIncomingJob(
+              prisma,
+              buildStagedJobInputFromNormalizedJob(normalizedJob, ingestRequest.adapterId),
+            );
 
-            if (existingJob) {
-              duplicateCount++;
-              continue;
-            }
-
-            const createdJob = await prisma.job.create({
-              data: {
-                title: normalizedJob.title,
-                companyName: normalizedJob.company,
-                sourceUrl: normalizedJob.sourceUrl,
-                sourceType: normalizedJob.sourceType as any,
-                canonicalUrl,
-                location: normalizedJob.location || null,
-                workplaceType: (normalizedJob.workplaceType as any) || WorkplaceType.UNKNOWN,
-                salaryText: normalizedJob.salary
-                  ? JSON.stringify(normalizedJob.salary)
-                  : null,
-                status: 'INGESTED',
-                adapterId: ingestRequest.adapterId,
-                content: {
-                  create: {
-                    rawText: normalizedJob.rawContent,
-                    requirements: normalizedJob.requiredSkills || [],
-                    niceToHaves: normalizedJob.preferredSkills || [],
-                    responsibilities: [],
-                  },
-                },
-              },
-            });
-
-            ingestedCount++;
-
-            try {
-              const result = await normalizeAndScoreJob(prisma, createdJob.id);
-              processedJobs.push(serializeJob(result.job));
-            } catch (workflowError) {
-              errors.push(
-                `Job '${normalizedJob.title}' was ingested but scoring failed: ${workflowError instanceof Error ? workflowError.message : String(workflowError)}`,
-              );
-
-              const fallbackJob = await prisma.job.findUnique({
-                where: { id: createdJob.id },
-                include: WORKFLOW_JOB_INCLUDE,
-              });
-
-              if (fallbackJob) {
-                processedJobs.push(serializeJob(fallbackJob));
-              }
-            }
+            recordStageResult(stageResult);
           } catch (jobErr) {
             errors.push(
-              `Failed to create job '${normalizedJob.title}': ${jobErr instanceof Error ? jobErr.message : String(jobErr)}`,
+              `Failed to stage job '${normalizedJob.title}': ${jobErr instanceof Error ? jobErr.message : String(jobErr)}`,
             );
           }
         }
@@ -333,17 +312,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const message = buildSummaryMessage(ingestedCount, duplicateCount, errors);
+    const message = buildSummaryMessage(
+      acceptedCount,
+      reviewCount,
+      rejectedCount,
+      duplicateCount,
+      errors,
+    );
 
     return NextResponse.json(
       {
-        ingested: ingestedCount,
+        staged: stagedCount,
+        accepted: acceptedCount,
+        review: reviewCount,
+        rejected: rejectedCount,
+        ingested: acceptedCount,
         duplicates: duplicateCount,
         errors,
-        count: ingestedCount,
+        count: acceptedCount,
         message,
         job: processedJobs[0] || null,
         items: processedJobs,
+        stagedItems,
       },
       { status: 200 },
     );
@@ -356,6 +346,10 @@ export async function POST(request: NextRequest) {
           error: 'Invalid request body',
           message: 'Invalid request body',
           details: error.errors,
+          staged: 0,
+          accepted: 0,
+          review: 0,
+          rejected: 0,
           ingested: 0,
           duplicates: 0,
           errors: ['Invalid request body'],
@@ -368,6 +362,10 @@ export async function POST(request: NextRequest) {
       {
         error: 'Failed to ingest jobs',
         message: 'Failed to ingest jobs',
+        staged: 0,
+        accepted: 0,
+        review: 0,
+        rejected: 0,
         ingested: 0,
         duplicates: 0,
         errors: ['Failed to ingest jobs'],

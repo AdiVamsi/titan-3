@@ -60,7 +60,93 @@ enum ApplyMethod {
   NOT_ATTEMPTED
 }
 
+enum StagedJobStatus {
+  RECEIVED
+  PROCESSED
+  ACCEPTED
+  REVIEW
+  REJECTED
+  ERROR
+}
+
+enum StagedJobDecision {
+  ACCEPT
+  REVIEW
+  REJECT
+}
+
+enum FreshnessBucket {
+  LAST_24_HOURS
+  LAST_3_DAYS
+  LAST_7_DAYS
+  LAST_14_DAYS
+  LAST_30_DAYS
+  STALE
+  UNKNOWN
+}
+
+enum OpenStatus {
+  OPEN
+  CLOSED
+  UNKNOWN
+}
+
 // Models
+
+model StagedJob {
+  id                       String            @id @default(cuid())
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+  sourceName               String
+  sourceType               SourceType        @default(OTHER)
+  sourceUrl                String
+  canonicalUrl             String?
+  externalId               String?
+  rawTitle                 String
+  rawCompany               String
+  rawLocation              String?
+  rawDescription           String            @db.Text
+  workplaceTypeRaw         String?
+  postedAtRaw              String?
+  postedAtNormalized       DateTime?
+  metadata                 Json?
+  pipelineState            StagedJobStatus   @default(RECEIVED)
+  filterDecision           StagedJobDecision?
+  filterReasons            String[]
+  dedupeReason             String?
+  duplicateOfJobId         String?
+  duplicateOfStagedJobId   String?
+  processingError          String?           @db.Text
+  normalizedTitle          String?
+  normalizedCompany        String?
+  normalizedLocation       String?
+  workplaceType            WorkplaceType     @default(UNKNOWN)
+  cleanedText              String?           @db.Text
+  yearsExperienceRequired  Int?
+  yearsExperienceRaw       String?
+  seniorityBucket          String?
+  senioritySignals         String[]
+  skillKeywords            String[]
+  sponsorshipSignals       String[]
+  normalizedRoleFamily     String?
+  descriptionHash          String?
+  freshnessBucket          FreshnessBucket   @default(UNKNOWN)
+  freshnessDecisionReason  String?
+  openStatus               OpenStatus        @default(UNKNOWN)
+  openStatusReason         String?
+  acceptedJobId            String?
+
+  @@index([pipelineState])
+  @@index([filterDecision])
+  @@index([sourceType])
+  @@index([sourceUrl])
+  @@index([canonicalUrl])
+  @@index([externalId])
+  @@index([descriptionHash])
+  @@index([normalizedCompany, normalizedTitle, normalizedLocation])
+  @@index([freshnessBucket, openStatus])
+  @@index([acceptedJobId])
+}
 
 model Job {
   id                String         @id @default(cuid())
